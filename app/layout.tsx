@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import BottomNavigation from "@/components/BottomNavigation";
+import PWAInstallPrompt from "@/components/PWAInstallPrompt";
 import { Moon } from "lucide-react";
 
 export const metadata: Metadata = {
@@ -57,6 +58,7 @@ export default function RootLayout({
 
           <main className="app-content">{children}</main>
 
+          <PWAInstallPrompt />
           <BottomNavigation />
         </div>
       </body>

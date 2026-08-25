@@ -1,0 +1,40 @@
+import type { MetadataRoute } from "next";
+
+export default function manifest(): MetadataRoute.Manifest {
+  return {
+    name: "Din Asistanı",
+    short_name: "İbadet",
+    description: "Zikirmatik, Ezan Vakitleri, Kur'an-ı Kerim ve Kıble Pusulası İbadet Asistanı",
+    start_url: "/",
+    display: "standalone",
+    background_color: "#090D16",
+    theme_color: "#10B981",
+    orientation: "portrait",
+    icons: [
+      {
+        src: "/icons/icon-192x192.png",
+        sizes: "192x192",
+        type: "image/png",
+        purpose: "maskable",
+      },
+      {
+        src: "/icons/icon-192x192.png",
+        sizes: "192x192",
+        type: "image/png",
+        purpose: "any",
+      },
+      {
+        src: "/icons/icon-512x512.png",
+        sizes: "512x512",
+        type: "image/png",
+        purpose: "maskable",
+      },
+      {
+        src: "/icons/icon-512x512.png",
+        sizes: "512x512",
+        type: "image/png",
+        purpose: "any",
+      },
+    ],
+  };
+}
