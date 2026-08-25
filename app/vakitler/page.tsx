@@ -1,0 +1,643 @@
+"use client";
+
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import {
+  MapPin,
+  Navigation,
+  Search,
+  X,
+  Clock,
+  Sun,
+  Sunrise,
+  Sunset,
+  Moon,
+  Calendar,
+  RefreshCw,
+  AlertCircle,
+  CheckSquare,
+  Square,
+  Bell,
+  BellOff,
+  Check,
+  Award,
+} from "lucide-react";
+
+interface TimingsData {
+  Fajr: string;
+  Sunrise: string;
+  Dhuhr: string;
+  Asr: string;
+  Maghrib: string;
+  Isha: string;
+  [key: string]: string;
+}
+
+interface DateInfo {
+  gregorian: string;
+  hijri: string;
+}
+
+interface PrayerSlot {
+  id: string;
+  name: string;
+  time: string;
+  icon: typeof Sun;
+}
+
+interface PrayerTrackerState {
+  fajr: boolean;
+  dhuhr: boolean;
+  asr: boolean;
+  maghrib: boolean;
+  isha: boolean;
+}
+
+const TURKEY_CITIES = [
+  "Adana", "Adıyaman", "Afyonkarahisar", "Ağrı", "Aksaray", "Amasya", "Ankara", "Antalya",
+  "Ardahan", "Artvin", "Aydın", "Balıkesir", "Bartın", "Batman", "Bayburt", "Bilecik",
+  "Bingöl", "Bitlis", "Bolu", "Burdur", "Bursa", "Çanakkale", "Çankırı", "Çorum",
+  "Denizli", "Diyarbakır", "Düzce", "Edirne", "Elazığ", "Erzincan", "Erzurum", "Eskişehir",
+  "Gaziantep", "Giresun", "Gümüşhane", "Hakkari", "Hatay", "Iğdır", "Isparta", "İstanbul",
+  "İzmir", "Kahramanmaraş", "Karabük", "Karaman", "Kars", "Kastamonu", "Kayseri", "Kırıkkale",
+  "Kırklareli", "Kırşehir", "Kilis", "Kocaeli", "Konya", "Kütahya", "Malatya", "Manisa",
+  "Mardin", "Mersin", "Muğla", "Muş", "Nevşehir", "Niğde", "Ordu", "Osmaniye",
+  "Rize", "Sakarya", "Samsun", "Siirt", "Sinop", "Sivas", "Şanlıurfa", "Şırnak",
+  "Tekirdağ", "Tokat", "Trabzon", "Tunceli", "Uşak", "Van", "Yalova", "Yozgat", "Zonguldak"
+];
+
+const POPULAR_CITIES = ["İstanbul", "Ankara", "İzmir", "Bursa", "Konya", "Antalya", "Gaziantep", "Adana"];
+
+export default function VakitlerPage() {
+  const [locationMode, setLocationMode] = useState<"GPS" | "MANUAL">("MANUAL");
+  const [selectedCity, setSelectedCity] = useState<string>("İstanbul");
+  const [userCoords, setUserCoords] = useState<{ lat: number; lng: number } | null>(null);
+
+  const [timings, setTimings] = useState<TimingsData | null>(null);
+  const [dateInfo, setDateInfo] = useState<DateInfo | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const [showCityModal, setShowCityModal] = useState<boolean>(false);
+  const [searchQuery, setSearchQuery] = useState<string>("");
+
+  const [nextPrayerIndex, setNextPrayerIndex] = useState<number>(0);
+  const [timeRemainingText, setTimeRemainingText] = useState<string>("00 : 00 : 00");
+
+  // -------------------------------------------------------------------------
+  // Step 6: 5 Vakit Namaz Takip & Notification API State
+  // -------------------------------------------------------------------------
+  const todayDateKey = useMemo(() => new Date().toISOString().split("T")[0], []);
+
+  const [prayerTracker, setPrayerTracker] = useState<PrayerTrackerState>({
+    fajr: false,
+    dhuhr: false,
+    asr: false,
+    maghrib: false,
+    isha: false,
+  });
+
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>("default");
+  const hasNotified15MinRef = useRef<Record<string, boolean>>({});
+
+  // Load saved preferences & today's tracker state on mount
+  useEffect(() => {
+    try {
+      const savedMode = localStorage.getItem("vakit_location_mode") as "GPS" | "MANUAL" | null;
+      const savedCity = localStorage.getItem("vakit_selected_city");
+      const savedTracker = localStorage.getItem(`namaz_tracker_${todayDateKey}`);
+
+      if (savedCity) setSelectedCity(savedCity);
+      if (savedTracker) setPrayerTracker(JSON.parse(savedTracker));
+
+      if (typeof window !== "undefined" && "Notification" in window) {
+        setNotificationPermission(Notification.permission);
+      }
+
+      if (savedMode === "GPS") {
+        requestGPSLocation();
+      } else {
+        setLocationMode("MANUAL");
+        fetchTimingsByCity(savedCity || "İstanbul");
+      }
+    } catch (e) {
+      console.error("LocalStorage load error:", e);
+      fetchTimingsByCity("İstanbul");
+    }
+  }, [todayDateKey]);
+
+  // Save prayer tracker state date-keyed in LocalStorage
+  const handleTogglePrayerCheck = (id: keyof PrayerTrackerState) => {
+    const updated = { ...prayerTracker, [id]: !prayerTracker[id] };
+    setPrayerTracker(updated);
+    try {
+      localStorage.setItem(`namaz_tracker_${todayDateKey}`, JSON.stringify(updated));
+    } catch (e) {
+      console.error("LocalStorage save error:", e);
+    }
+  };
+
+  // Request Notification API Permission
+  const requestNotificationPermission = async () => {
+    if (typeof window !== "undefined" && "Notification" in window) {
+      try {
+        const result = await Notification.requestPermission();
+        setNotificationPermission(result);
+        if (result === "granted") {
+          new Notification("Ezan Hatırlatıcı Etkinleştirildi 🔔", {
+            body: "Vaktin çıkmasına 15 dakika kala namazınızı kılmadıysanız akıllı bildirim alacaksınız.",
+          });
+        }
+      } catch (err) {
+        console.error("Notification permission error:", err);
+      }
+    }
+  };
+
+  // Fetch timings by City (Aladhan Diyanet Method 13)
+  const fetchTimingsByCity = async (cityName: string) => {
+    setIsLoading(true);
+    setErrorMsg(null);
+    try {
+      const sanitizedCity = cityName
+        .replace(/ğ/g, "g").replace(/Ğ/g, "G")
+        .replace(/ü/g, "u").replace(/Ü/g, "U")
+        .replace(/ş/g, "s").replace(/Ş/g, "S")
+        .replace(/ı/g, "i").replace(/İ/g, "I")
+        .replace(/ö/g, "o").replace(/Ö/g, "O")
+        .replace(/ç/g, "c").replace(/Ç/g, "C");
+
+      const response = await fetch(
+        `https://api.aladhan.com/v1/timingsByCity?city=${encodeURIComponent(sanitizedCity)}&country=Turkey&method=13`
+      );
+      const data = await response.json();
+
+      if (data && data.code === 200 && data.data) {
+        setTimings(data.data.timings);
+        const gDate = data.data.date.readable || "";
+        const hDate = `${data.data.date.hijri.day} ${data.data.date.hijri.month.tr || data.data.date.hijri.month.en} ${data.data.date.hijri.year}`;
+        setDateInfo({ gregorian: gDate, hijri: hDate });
+      } else {
+        throw new Error("Vakit verisi alınamadı");
+      }
+    } catch (err) {
+      console.error("API error:", err);
+      setErrorMsg("Ezan vakitleri yüklenirken bir sorun oluştu.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Fetch timings by Coordinates (Aladhan Diyanet Method 13)
+  const fetchTimingsByCoords = async (lat: number, lng: number) => {
+    setIsLoading(true);
+    setErrorMsg(null);
+    try {
+      const response = await fetch(
+        `https://api.aladhan.com/v1/timings?latitude=${lat}&longitude=${lng}&method=13`
+      );
+      const data = await response.json();
+
+      if (data && data.code === 200 && data.data) {
+        setTimings(data.data.timings);
+        const gDate = data.data.date.readable || "";
+        const hDate = `${data.data.date.hijri.day} ${data.data.date.hijri.month.tr || data.data.date.hijri.month.en} ${data.data.date.hijri.year}`;
+        setDateInfo({ gregorian: gDate, hijri: hDate });
+      } else {
+        throw new Error("Koordinat vakit verisi alınamadı");
+      }
+    } catch (err) {
+      console.error("API Coords error:", err);
+      setErrorMsg("Konum bazlı vakitler alınamadı. Manuel şehir vakitleri gösteriliyor.");
+      fetchTimingsByCity(selectedCity);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Request GPS Location
+  const requestGPSLocation = () => {
+    if (typeof navigator !== "undefined" && navigator.geolocation) {
+      setIsLoading(true);
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const lat = position.coords.latitude;
+          const lng = position.coords.longitude;
+          setUserCoords({ lat, lng });
+          setLocationMode("GPS");
+          localStorage.setItem("vakit_location_mode", "GPS");
+          fetchTimingsByCoords(lat, lng);
+        },
+        (error) => {
+          console.warn("GPS Permission denied or error:", error);
+          setLocationMode("MANUAL");
+          localStorage.setItem("vakit_location_mode", "MANUAL");
+          fetchTimingsByCity(selectedCity);
+        },
+        { timeout: 10000 }
+      );
+    } else {
+      setLocationMode("MANUAL");
+      fetchTimingsByCity(selectedCity);
+    }
+  };
+
+  // Handle City Change
+  const handleSelectCity = (cityName: string) => {
+    setSelectedCity(cityName);
+    setLocationMode("MANUAL");
+    localStorage.setItem("vakit_selected_city", cityName);
+    localStorage.setItem("vakit_location_mode", "MANUAL");
+    setShowCityModal(false);
+    fetchTimingsByCity(cityName);
+  };
+
+  // 6 Prayer Slots Array
+  const prayerSlots: PrayerSlot[] = useMemo(() => {
+    if (!timings) return [];
+    return [
+      { id: "fajr", name: "İmsak", time: timings.Fajr, icon: Moon },
+      { id: "sunrise", name: "Güneş", time: timings.Sunrise, icon: Sunrise },
+      { id: "dhuhr", name: "Öğle", time: timings.Dhuhr, icon: Sun },
+      { id: "asr", name: "İkindi", time: timings.Asr, icon: Sun },
+      { id: "maghrib", name: "Akşam", time: timings.Maghrib, icon: Sunset },
+      { id: "isha", name: "Yatsı", time: timings.Isha, icon: Moon },
+    ];
+  }, [timings]);
+
+  // Checkbox Checklist Items (5 Fard Prayers)
+  const checklistItems = useMemo(() => {
+    if (!timings) return [];
+    return [
+      { id: "fajr" as keyof PrayerTrackerState, name: "Sabah", time: timings.Fajr },
+      { id: "dhuhr" as keyof PrayerTrackerState, name: "Öğle", time: timings.Dhuhr },
+      { id: "asr" as keyof PrayerTrackerState, name: "İkindi", time: timings.Asr },
+      { id: "maghrib" as keyof PrayerTrackerState, name: "Akşam", time: timings.Maghrib },
+      { id: "isha" as keyof PrayerTrackerState, name: "Yatsı", time: timings.Isha },
+    ];
+  }, [timings]);
+
+  // Calculate Daily Progress
+  const completedCount = useMemo(() => {
+    return Object.values(prayerTracker).filter(Boolean).length;
+  }, [prayerTracker]);
+
+  const trackerProgressPercent = Math.round((completedCount / 5) * 100);
+
+  // Dynamic Countdown Timer Effect & 15-Min Notification Reminder Trigger
+  const updateCountdown = useCallback(() => {
+    if (!prayerSlots || prayerSlots.length === 0) return;
+
+    const now = new Date();
+    const currentTotalSec = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+
+    const slotsInSec = prayerSlots.map((slot) => {
+      const [h, m] = slot.time.split(":").map((v) => parseInt(v, 10));
+      return h * 3600 + m * 60;
+    });
+
+    let foundNextIdx = -1;
+    let secondsDiff = 0;
+
+    for (let i = 0; i < slotsInSec.length; i++) {
+      if (slotsInSec[i] > currentTotalSec) {
+        foundNextIdx = i;
+        secondsDiff = slotsInSec[i] - currentTotalSec;
+        break;
+      }
+    }
+
+    if (foundNextIdx === -1) {
+      foundNextIdx = 0;
+      const secondsUntilMidnight = 86400 - currentTotalSec;
+      secondsDiff = secondsUntilMidnight + slotsInSec[0];
+    }
+
+    setNextPrayerIndex(foundNextIdx);
+
+    const hrs = Math.floor(secondsDiff / 3600);
+    const mins = Math.floor((secondsDiff % 3600) / 60);
+    const secs = secondsDiff % 60;
+
+    const formattedHrs = hrs.toString().padStart(2, "0");
+    const formattedMins = mins.toString().padStart(2, "0");
+    const formattedSecs = secs.toString().padStart(2, "0");
+
+    setTimeRemainingText(`${formattedHrs} : ${formattedMins} : ${formattedSecs}`);
+
+    // -----------------------------------------------------------------------
+    // Smart Notification: Trigger 15 minutes (900 seconds) before next prayer
+    // -----------------------------------------------------------------------
+    if (secondsDiff <= 900 && secondsDiff > 840) {
+      const nextPrayerSlot = prayerSlots[foundNextIdx];
+      const trackerKey = nextPrayerSlot.id as keyof PrayerTrackerState;
+
+      if (
+        trackerKey &&
+        !prayerTracker[trackerKey] &&
+        !hasNotified15MinRef.current[nextPrayerSlot.id] &&
+        notificationPermission === "granted"
+      ) {
+        hasNotified15MinRef.current[nextPrayerSlot.id] = true;
+        try {
+          new Notification("Ezan Vakti Yaklaşıyor! 🕌", {
+            body: `Henüz ${nextPrayerSlot.name} vakti namazınızı kılmadınız. Vaktin girmesine 15 dakika kaldı!`,
+          });
+        } catch (err) {
+          console.warn("Notification trigger error:", err);
+        }
+      }
+    }
+  }, [prayerSlots, prayerTracker, notificationPermission]);
+
+  useEffect(() => {
+    updateCountdown();
+    const timerId = setInterval(updateCountdown, 1000);
+    return () => clearInterval(timerId);
+  }, [updateCountdown]);
+
+  // Filter cities for search
+  const filteredCities = TURKEY_CITIES.filter((c) =>
+    c.toLocaleLowerCase("tr").includes(searchQuery.toLocaleLowerCase("tr"))
+  );
+
+  const nextPrayer = prayerSlots[nextPrayerIndex] || { name: "İmsak", time: "--:--" };
+
+  return (
+    <div className="vakitler-wrapper">
+      {/* Location Bar & City Selector Header */}
+      <div className="location-bar-card">
+        <div className="location-info-left">
+          <div className="location-icon-bg">
+            <MapPin size={22} />
+          </div>
+          <div>
+            <div className="location-city-name">
+              <span>{locationMode === "GPS" ? "Mevcut Konum" : selectedCity}</span>
+            </div>
+            <div className="location-status-tag">
+              <span className="live-dot" style={{ width: "5px", height: "5px" }}></span>
+              <span>{locationMode === "GPS" ? "GPS Hassas Konum" : "Türkiye / Diyanet"}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="location-actions-right">
+          {locationMode === "MANUAL" ? (
+            <button
+              className="btn-location-action gps-btn"
+              onClick={requestGPSLocation}
+              title="GPS Konumumu Kullan"
+              id="btn-use-gps"
+            >
+              <Navigation size={15} />
+              <span>GPS</span>
+            </button>
+          ) : null}
+
+          <button
+            className="btn-location-action"
+            onClick={() => setShowCityModal(true)}
+            id="btn-open-city-modal"
+          >
+            <span>Şehir Değiştir</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Countdown Hero Card */}
+      <div className="countdown-hero-card">
+        <div className="next-prayer-badge">
+          <Clock size={14} />
+          <span>Sıradaki Vakit</span>
+        </div>
+        <div className="next-prayer-name">
+          {nextPrayer.name} ({nextPrayer.time})
+        </div>
+        <div className="timer-digits-wrapper">{timeRemainingText}</div>
+
+        {dateInfo && (
+          <div className="date-info-footer">
+            <Calendar size={14} />
+            <span>{dateInfo.gregorian}</span>
+            <span>•</span>
+            <span>{dateInfo.hijri}</span>
+          </div>
+        )}
+      </div>
+
+      {/* ------------------------------------------------------------------ */}
+      {/* STEP 6: GÜNLÜK NAMAZ TAKİP VE AKILLI HATIRLATICI KARTI            */}
+      {/* ------------------------------------------------------------------ */}
+      <div className="namaz-tracker-card" id="card-namaz-tracker">
+        <div className="tracker-header-row">
+          <div className="tracker-title-box">
+            <div className="tracker-icon-badge">
+              <Award size={22} />
+            </div>
+            <div>
+              <h3 className="tracker-main-title">Günlük Namaz Takibi</h3>
+              <p className="tracker-subtitle">Bugünün Namaz Çetelesi</p>
+            </div>
+          </div>
+
+          <button
+            className={`btn-notification-toggle ${notificationPermission === "granted" ? "enabled" : ""}`}
+            onClick={requestNotificationPermission}
+            id="btn-toggle-notifications"
+          >
+            {notificationPermission === "granted" ? (
+              <>
+                <Bell size={14} />
+                <span>Bildirimler Açık</span>
+              </>
+            ) : (
+              <>
+                <BellOff size={14} />
+                <span>Bildirim Etkinleştir (15 Dk)</span>
+              </>
+            )}
+          </button>
+        </div>
+
+        {/* Daily Progress Bar */}
+        <div className="tracker-progress-container">
+          <div className="progress-info-row">
+            <span className="progress-label-text">Bugünkü İlerleme</span>
+            <span className="progress-percent-text">
+              {completedCount} / 5 Kılındı (%{trackerProgressPercent})
+            </span>
+          </div>
+          <div className="progress-bar-track">
+            <div
+              className="progress-bar-fill"
+              style={{ width: `${trackerProgressPercent}%` }}
+            />
+          </div>
+        </div>
+
+        {/* 5 Prayers Checklist Grid */}
+        <div className="checklist-prayers-grid">
+          {checklistItems.map((item) => {
+            const isChecked = prayerTracker[item.id];
+            return (
+              <div
+                key={item.id}
+                className={`prayer-check-item ${isChecked ? "checked" : ""}`}
+                onClick={() => handleTogglePrayerCheck(item.id)}
+                id={`check-prayer-${item.id}`}
+              >
+                <div className="custom-checkbox-box">
+                  {isChecked && <Check size={14} strokeWidth={3} />}
+                </div>
+                <span className="check-prayer-name">{item.name}</span>
+                <span className="check-prayer-time">{item.time}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Error / Loading Indicators */}
+      {isLoading ? (
+        <div
+          style={{
+            textAlign: "center",
+            padding: "40px 20px",
+            color: "var(--text-secondary)",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            gap: "12px",
+          }}
+        >
+          <RefreshCw size={28} className="spin-icon" style={{ animation: "spin 1.5s linear infinite" }} />
+          <span>Ezan vakitleri güncelleniyor...</span>
+        </div>
+      ) : errorMsg ? (
+        <div
+          style={{
+            padding: "16px 20px",
+            borderRadius: "var(--radius-md)",
+            background: "rgba(239, 68, 68, 0.12)",
+            border: "1px solid rgba(239, 68, 68, 0.3)",
+            color: "#F87171",
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+            fontSize: "0.9rem",
+          }}
+        >
+          <AlertCircle size={20} />
+          <span>{errorMsg}</span>
+        </div>
+      ) : (
+        /* Prayer Times 6 Slots Cards List */
+        <div className="prayer-cards-list">
+          {prayerSlots.map((slot, index) => {
+            const isNext = index === nextPrayerIndex;
+            const Icon = slot.icon;
+
+            return (
+              <div
+                key={slot.id}
+                className={`prayer-time-card ${isNext ? "active-next" : ""}`}
+                id={`prayer-slot-${slot.id}`}
+              >
+                <div className="prayer-card-left">
+                  <div className="prayer-icon-box">
+                    <Icon size={20} />
+                  </div>
+                  <div>
+                    <div className="prayer-name-text">{slot.name}</div>
+                    {isNext && <div className="prayer-status-label">• Ezan Vakti Yaklaşıyor</div>}
+                  </div>
+                </div>
+
+                <div className="prayer-time-value">{slot.time}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* City Selector Modal */}
+      {showCityModal && (
+        <div className="modal-overlay">
+          <div className="city-modal-card">
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+              }}
+            >
+              <h3 className="modal-title" style={{ fontSize: "1.25rem" }}>
+                Şehir Seçimi
+              </h3>
+              <button
+                onClick={() => setShowCityModal(false)}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: "var(--text-muted)",
+                  cursor: "pointer",
+                }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Search Field */}
+            <div className="search-box-wrapper">
+              <Search size={18} className="search-icon-inside" />
+              <input
+                type="text"
+                className="search-input-field"
+                placeholder="Şehir ara (Örn: Bursa, Konya...)"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                autoFocus
+              />
+            </div>
+
+            {/* Popular Cities Quick Chips */}
+            <div>
+              <div className="popular-cities-label">Popüler Şehirler</div>
+              <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                {POPULAR_CITIES.map((city) => (
+                  <button
+                    key={city}
+                    className={`chip-btn ${selectedCity === city && locationMode === "MANUAL" ? "active" : ""}`}
+                    onClick={() => handleSelectCity(city)}
+                  >
+                    {city}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Scrollable 81 Cities Grid */}
+            <div>
+              <div className="popular-cities-label">Tüm İller (81 İl)</div>
+              <div className="cities-scroll-grid">
+                {filteredCities.map((city) => {
+                  const isSelected = selectedCity === city && locationMode === "MANUAL";
+                  return (
+                    <button
+                      key={city}
+                      className={`city-item-btn ${isSelected ? "selected" : ""}`}
+                      onClick={() => handleSelectCity(city)}
+                      id={`city-btn-${city.toLowerCase()}`}
+                    >
+                      {city}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
