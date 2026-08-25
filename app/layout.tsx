@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import BottomNavigation from "@/components/BottomNavigation";
 import PWAInstallPrompt from "@/components/PWAInstallPrompt";
+import HeaderInstallButton from "@/components/HeaderInstallButton";
 import { Moon } from "lucide-react";
 
 export const metadata: Metadata = {
@@ -50,10 +51,7 @@ export default function RootLayout({
               </div>
             </div>
 
-            <div className="header-badge">
-              <span className="live-dot"></span>
-              <span>Aktif</span>
-            </div>
+            <HeaderInstallButton />
           </header>
 
           <main className="app-content">{children}</main>

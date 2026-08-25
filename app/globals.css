@@ -1896,6 +1896,47 @@ html, body {
   font-variant-numeric: tabular-nums;
 }
 
+/* Header PWA Install Button */
+.header-install-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: var(--radius-full);
+  background: linear-gradient(135deg, var(--emerald-primary), #059669);
+  color: #FFFFFF;
+  font-size: 0.8rem;
+  font-weight: 700;
+  border: 1px solid var(--border-highlight);
+  box-shadow: 0 0 12px var(--emerald-glow);
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  white-space: nowrap;
+}
+
+.header-install-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 18px var(--emerald-primary);
+  background: linear-gradient(135deg, #10B981, #047857);
+}
+
+.install-btn-icon {
+  animation: bounce 2s infinite;
+}
+
+@keyframes bounce {
+  0%, 20%, 50%, 80%, 100% {
+    transform: translateY(0);
+  }
+  40% {
+    transform: translateY(-3px);
+  }
+  60% {
+    transform: translateY(-1.5px);
+  }
+}
+
+
 
 
 
