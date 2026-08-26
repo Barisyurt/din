@@ -67,12 +67,17 @@ const TURKEY_CITIES = [
 
 const POPULAR_CITIES = ["İstanbul", "Ankara", "İzmir", "Bursa", "Konya", "Antalya", "Gaziantep", "Adana"];
 
-// Kalıcı clientId üret (localStorage)
+// Kalıcı userId/clientId üret (localStorage)
 function getOrCreateClientId(): string {
   if (typeof window === "undefined") return "";
-  const existing = localStorage.getItem("din_client_id");
-  if (existing) return existing;
-  const newId = `cid_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  const existing = localStorage.getItem("pwa_user_id") || localStorage.getItem("din_client_id");
+  if (existing) {
+    localStorage.setItem("pwa_user_id", existing);
+    localStorage.setItem("din_client_id", existing);
+    return existing;
+  }
+  const newId = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `usr_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  localStorage.setItem("pwa_user_id", newId);
   localStorage.setItem("din_client_id", newId);
   return newId;
 }

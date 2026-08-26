@@ -138,8 +138,9 @@ export async function GET(req: NextRequest) {
         { key: "isha", apiKey: "Isha" },
       ];
 
-      // Kullanıcının günlük namaz durumunu al
-      const prayerStatusRaw = await redis.get<string>(`prayer:${clientId}:${todayStr}`);
+      // Kullanıcının günlük namaz durumunu hgetall ile al (user:${clientId}:prayers:${todayStr})
+      const prayerStatusKey = `user:${clientId}:prayers:${todayStr}`;
+      const prayerStatusRaw = (await redis.hgetall(prayerStatusKey)) as Record<string, unknown> | null;
       let prayerStatus: Record<PrayerKey, boolean> = {
         fajr: false,
         dhuhr: false,
@@ -148,12 +149,10 @@ export async function GET(req: NextRequest) {
         isha: false,
       };
       if (prayerStatusRaw) {
-        try {
-          const parsed = typeof prayerStatusRaw === "string"
-            ? JSON.parse(prayerStatusRaw)
-            : prayerStatusRaw;
-          prayerStatus = { ...prayerStatus, ...parsed };
-        } catch {}
+        for (const pk of ["fajr", "dhuhr", "asr", "maghrib", "isha"] as PrayerKey[]) {
+          const val = prayerStatusRaw[pk];
+          prayerStatus[pk] = val === true || val === "true" || val === "1" || val === 1;
+        }
       }
 
       for (const { key, apiKey } of farzPrayers) {
