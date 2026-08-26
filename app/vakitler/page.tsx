@@ -158,35 +158,49 @@ export default function VakitlerPage() {
     }
   }, [todayDateKey, checkPushSubscription]);
 
-  // ─── Namaz vakti işaretleme ───────────────────────────────────────────────
+  // ─── Namaz vakti işaretleme ────────────────────────────────
   const handleTogglePrayerCheck = useCallback(async (id: keyof PrayerTrackerState) => {
-    const updated = { ...prayerTracker, [id]: !prayerTracker[id] };
+    const newValue = !prayerTracker[id];
+    const updated = { ...prayerTracker, [id]: newValue };
+
+    // 1. Anında UI güncelle
     setPrayerTracker(updated);
 
-    // LocalStorage güncelle
+    // 2. LocalStorage güncelle
     try {
       localStorage.setItem(`namaz_tracker_${todayDateKey}`, JSON.stringify(updated));
     } catch (e) {
-      console.error("LocalStorage save error:", e);
+      console.error("[Prayer] LocalStorage kayit hatasi:", e);
     }
 
-    // API üzerinden Redis'e kaydet
-    const clientId = getOrCreateClientId();
-    if (clientId) {
-      try {
-        await fetch("/api/prayer/status", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            clientId,
-            date: todayDateKey,
-            prayer: id,
-            completed: updated[id],
-          }),
-        });
-      } catch (err) {
-        console.warn("[Prayer Status] API sync hatası:", err);
+    // 3. clientId al
+    let clientId = "";
+    try { clientId = getOrCreateClientId(); } catch (e) {
+      console.error("[Prayer] clientId olusturulamadi:", e);
+    }
+
+    console.log("[Prayer] API istegi gonderiliyor ->", { clientId, date: todayDateKey, prayer: id, completed: newValue });
+
+    if (!clientId) {
+      console.warn("[Prayer] clientId bos, API istegi atlaniyor.");
+      return;
+    }
+
+    // 4. API üzerinden Redis'e kaydet
+    try {
+      const res = await fetch("/api/prayer/status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clientId, date: todayDateKey, prayer: id, completed: newValue }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        console.log("[Prayer] API basarili ->", data);
+      } else {
+        console.error("[Prayer] API hata ->", res.status, data);
       }
+    } catch (err) {
+      console.error("[Prayer] Fetch hatasi:", err);
     }
   }, [prayerTracker, todayDateKey]);
 
