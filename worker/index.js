@@ -1,71 +1,34 @@
-// Din Asistanı - Custom Service Worker Handlers
-// next-pwa v5 bu dosyayı otomatik olarak Workbox SW ile birleştirir
+// Din Asistanı - Custom Service Worker (Web Push & Notification Handlers)
 
-// ─── API İSTEKLERİ: Service Worker Bypass ────────────────────────────────────
-// /api/ ile başlayan istekleri SW kesinlikle yakalamasın, doğrudan ağa iletsin
-self.addEventListener("fetch", (event) => {
+// ─── 1. API İSTEKLERİ: Service Worker Bypass ────────────────────────────────
+self.addEventListener("fetch", function (event) {
   if (event.request.url.includes("/api/")) {
-    return; // Service Worker müdahale etmesin
+    return; // Network-only
   }
 });
 
-// ─── Push Event Handler ─────────────────────────────────────────────────────
-self.addEventListener("push", (event) => {
-  if (!event.data) return;
-
-  let payload;
-  try {
-    payload = event.data.json();
-  } catch {
-    payload = {
-      title: "Din Asistanı 🕌",
-      body: event.data.text(),
+// ─── 2. Push Event Listener ──────────────────────────────────────────────────
+self.addEventListener("push", function (event) {
+  if (event.data) {
+    let data;
+    try {
+      data = event.data.json();
+    } catch (e) {
+      data = { title: "Din Asistanı", body: event.data.text() };
+    }
+    const options = {
+      body: data.body || "Namaz vakti girdi.",
       icon: "/icons/icon-192x192.png",
       badge: "/icons/icon-192x192.png",
+      vibrate: [100, 50, 100],
+      data: { url: data.url || "/" }
     };
+    event.waitUntil(self.registration.showNotification(data.title || "Din Asistanı", options));
   }
-
-  const { title, body, icon, badge, data } = payload;
-
-  const options = {
-    body: body || "Namaz vakti yaklaşıyor!",
-    icon: icon || "/icons/icon-192x192.png",
-    badge: badge || "/icons/icon-192x192.png",
-    vibrate: [200, 100, 200],
-    tag: (data && data.prayerKey) || "din-asistani-reminder",
-    renotify: true,
-    requireInteraction: true,
-    data: data || { url: "/vakitler" },
-  };
-
-  event.waitUntil(
-    self.registration.showNotification(title || "Din Asistanı 🕌", options)
-  );
 });
 
-// ─── Notification Click Handler ─────────────────────────────────────────────
-self.addEventListener("notificationclick", (event) => {
+// ─── 3. Notification Click Listener ──────────────────────────────────────────
+self.addEventListener("notificationclick", function (event) {
   event.notification.close();
-
-  const targetUrl =
-    (event.notification.data && event.notification.data.url) || "/vakitler";
-
-  event.waitUntil(
-    clients
-      .matchAll({ type: "window", includeUncontrolled: true })
-      .then((clientList) => {
-        for (const client of clientList) {
-          if (
-            client.url.includes(self.location.origin) &&
-            "focus" in client
-          ) {
-            client.focus();
-            return client.navigate(targetUrl);
-          }
-        }
-        if (clients.openWindow) {
-          return clients.openWindow(targetUrl);
-        }
-      })
-  );
+  event.waitUntil(clients.openWindow(event.notification.data.url || "/"));
 });

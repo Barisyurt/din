@@ -1,104 +1,87 @@
 import { NextRequest, NextResponse } from "next/server";
-import redis from "@/lib/redis";
+import { Redis } from "@upstash/redis";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-interface PushSubscriptionKeys {
-  p256dh: string;
-  auth: string;
+function getRedisClient(): Redis | null {
+  const url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+
+  if (!url || !token) return null;
+  return new Redis({ url, token });
 }
 
-interface SubscribeBody {
-  clientId: string;
-  subscription: {
-    endpoint: string;
-    keys: PushSubscriptionKeys;
-  };
-  city: string;
-}
-
-/**
- * POST /api/push/subscribe
- * Kullanıcının Web Push subscription bilgilerini ve seçtiği şehri Redis'e kaydeder.
- * Redis Key: sub:{clientId}
- */
 export async function POST(req: NextRequest) {
   console.log("[/api/push/subscribe] POST isteği alındı");
 
   try {
-    let body: SubscribeBody;
-    try {
-      body = await req.json();
-    } catch (parseErr) {
-      console.error("[/api/push/subscribe] JSON parse hatası:", parseErr);
-      return NextResponse.json({ error: "Geçersiz JSON gövdesi." }, { status: 400 });
-    }
+    const body = await req.json();
+    const userId = body.userId || body.clientId;
+    const { subscription, city } = body;
 
-    const { clientId, subscription, city } = body;
-
-    console.log("[/api/push/subscribe] Gelen veri:", {
-      clientId,
-      city,
-      endpointPrefix: subscription?.endpoint?.slice(0, 60),
-      hasKeys: !!subscription?.keys,
-    });
-
-    if (!clientId || !subscription?.endpoint || !subscription?.keys || !city) {
-      console.warn("[/api/push/subscribe] Eksik parametreler:", { clientId, city, hasEndpoint: !!subscription?.endpoint, hasKeys: !!subscription?.keys });
+    if (!userId || !subscription?.endpoint || !subscription?.keys) {
       return NextResponse.json(
-        { error: "Eksik parametreler: clientId, subscription, city zorunludur." },
+        { error: "Eksik parametreler: userId/clientId ve subscription zorunludur." },
         { status: 400 }
       );
     }
 
     const payload = {
+      userId,
       endpoint: subscription.endpoint,
       keys: {
         p256dh: subscription.keys.p256dh,
         auth: subscription.keys.auth,
       },
-      city,
+      city: city || "İstanbul",
       updatedAt: new Date().toISOString(),
     };
 
-    // Redis'e kaydet — TTL yok (kalıcı subscription)
-    console.log("[/api/push/subscribe] Redis'e yazılıyor: sub:", clientId);
-    await redis.set(`sub:${clientId}`, JSON.stringify(payload));
+    const redis = getRedisClient();
+    if (redis) {
+      // 1. Anahtar: user:${userId}:subscription
+      await redis.set(`user:${userId}:subscription`, JSON.stringify(payload));
 
-    // Kolay tarama için üye seti güncelle
-    await redis.sadd("subscribers", clientId);
+      // 2. Anahtar: sub:${userId} (Cron uyumluluğu için)
+      await redis.set(`sub:${userId}`, JSON.stringify(payload));
 
-    console.log("[/api/push/subscribe] ✅ Başarıyla kaydedildi. clientId:", clientId, "city:", city);
-    return NextResponse.json({ success: true, clientId });
+      // 3. Genel liste: subscriptions (SET formatında JSON)
+      await redis.sadd("subscriptions", JSON.stringify(payload));
+
+      // 4. Genel liste: subscribers (SET formatında userId)
+      await redis.sadd("subscribers", userId);
+
+      console.log("[/api/push/subscribe] ✅ Redis'e kaydedildi:", userId);
+    } else {
+      console.warn("[/api/push/subscribe] Redis bağlantısı yok, env değişkenlerini kontrol edin.");
+    }
+
+    return NextResponse.json({ success: true, userId, payload });
   } catch (err) {
-    console.error("[/api/push/subscribe] ❌ Sunucu hatası:", err);
-    return NextResponse.json(
-      { error: "Sunucu hatası oluştu.", detail: String(err) },
-      { status: 500 }
-    );
+    console.error("[/api/push/subscribe] ❌ Hata:", err);
+    return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
 
-/**
- * DELETE /api/push/subscribe
- * Kullanıcının push aboneliğini Redis'ten siler (bildirim kapatma).
- */
 export async function DELETE(req: NextRequest) {
-  console.log("[/api/push/subscribe] DELETE isteği alındı");
   try {
-    const { clientId } = await req.json();
-    if (!clientId) {
-      return NextResponse.json({ error: "clientId gerekli." }, { status: 400 });
+    const body = await req.json();
+    const userId = body.userId || body.clientId;
+
+    if (!userId) {
+      return NextResponse.json({ error: "userId/clientId gerekli." }, { status: 400 });
     }
 
-    await redis.del(`sub:${clientId}`);
-    await redis.srem("subscribers", clientId);
+    const redis = getRedisClient();
+    if (redis) {
+      await redis.del(`user:${userId}:subscription`);
+      await redis.del(`sub:${userId}`);
+      await redis.srem("subscribers", userId);
+    }
 
-    console.log("[/api/push/subscribe] ✅ Abonelik silindi. clientId:", clientId);
     return NextResponse.json({ success: true });
   } catch (err) {
-    console.error("[/api/push/subscribe] ❌ DELETE Sunucu hatası:", err);
-    return NextResponse.json({ error: "Sunucu hatası.", detail: String(err) }, { status: 500 });
+    return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
