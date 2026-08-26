@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import webpush from "web-push";
 import redis from "@/lib/redis";
 
+export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 // Vercel Cron bu endpoint'i her dakika çağırır
 export const maxDuration = 30; // saniye

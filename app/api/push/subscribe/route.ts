@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import redis from "@/lib/redis";
 
+export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 interface PushSubscriptionKeys {
