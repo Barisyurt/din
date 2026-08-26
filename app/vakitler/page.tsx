@@ -218,6 +218,26 @@ export default function VakitlerPage() {
   }, [prayerTracker, todayDateKey]);
 
 
+  const handleDirectTest = async () => {
+    try {
+      alert("İstek başlatılıyor...");
+      const res = await fetch("/api/prayer/status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: "test_iphone_user",
+          prayerName: "dhuhr",
+          completed: true,
+          date: new Date().toISOString().split("T")[0],
+        }),
+      });
+      const data = await res.json();
+      alert("Sunucu Yanıtı: " + JSON.stringify(data));
+    } catch (err) {
+      alert("Hata Oluştu: " + String(err));
+    }
+  };
+
   // ─── Web Push Aboneliği ───────────────────────────────────────────────────
   const handleTogglePushNotification = useCallback(async () => {
     if (typeof window === "undefined" || !("serviceWorker" in navigator) || !("PushManager" in window)) {
@@ -755,6 +775,29 @@ export default function VakitlerPage() {
           })}
         </div>
       )}
+
+      {/* Test Button for Direct API Check */}
+      <div style={{ marginTop: "20px", marginBottom: "20px", textAlign: "center" }}>
+        <button
+          onClick={handleDirectTest}
+          style={{
+            background: "linear-gradient(135deg, #EF4444, #DC2626)",
+            color: "#FFFFFF",
+            fontWeight: "700",
+            fontSize: "0.95rem",
+            padding: "14px 24px",
+            borderRadius: "16px",
+            border: "none",
+            boxShadow: "0 4px 15px rgba(239, 68, 68, 0.4)",
+            cursor: "pointer",
+            width: "100%",
+            maxWidth: "360px",
+          }}
+          id="btn-direct-db-test"
+        >
+          ⚡ DB Test İsteği Gönder
+        </button>
+      </div>
 
       {/* City Selector Modal */}
       {showCityModal && (
