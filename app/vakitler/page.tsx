@@ -158,7 +158,7 @@ export default function VakitlerPage() {
     }
   }, [todayDateKey, checkPushSubscription]);
 
-  // ─── Namaz vakti işaretleme ────────────────────────────────
+  // ─── Namaz vakti işaretleme ─────────────────────────────────────────────
   const handleTogglePrayerCheck = useCallback(async (id: keyof PrayerTrackerState) => {
     const newValue = !prayerTracker[id];
     const updated = { ...prayerTracker, [id]: newValue };
@@ -170,39 +170,48 @@ export default function VakitlerPage() {
     try {
       localStorage.setItem(`namaz_tracker_${todayDateKey}`, JSON.stringify(updated));
     } catch (e) {
-      console.error("[Prayer] LocalStorage kayit hatasi:", e);
+      console.error("[Prayer] LocalStorage hatasi:", e);
     }
 
-    // 3. clientId al
-    let clientId = "";
-    try { clientId = getOrCreateClientId(); } catch (e) {
-      console.error("[Prayer] clientId olusturulamadi:", e);
+    // 3. userId al veya oluştur (crypto.randomUUID kullan)
+    let userId = "";
+    try {
+      userId = localStorage.getItem("pwa_user_id") || "";
+      if (!userId) {
+        userId = crypto.randomUUID();
+        localStorage.setItem("pwa_user_id", userId);
+      }
+    } catch (e) {
+      console.error("[Prayer] userId olusturulamadi:", e);
     }
 
-    console.log("[Prayer] API istegi gonderiliyor ->", { clientId, date: todayDateKey, prayer: id, completed: newValue });
+    const payload = {
+      userId,
+      prayerName: id,
+      completed: newValue,
+      date: new Date().toISOString().split("T")[0],
+    };
 
-    if (!clientId) {
-      console.warn("[Prayer] clientId bos, API istegi atlaniyor.");
-      return;
-    }
+    console.log("[Prayer] API'ye gonderiliyor:", payload);
 
-    // 4. API üzerinden Redis'e kaydet
+    // 4. Fetch — API Route /api/prayer/status
     try {
       const res = await fetch("/api/prayer/status", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ clientId, date: todayDateKey, prayer: id, completed: newValue }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (res.ok) {
-        console.log("[Prayer] API basarili ->", data);
+        console.log("[Prayer] ✅ Basarili:", data);
       } else {
-        console.error("[Prayer] API hata ->", res.status, data);
+        console.error("[Prayer] ❌ API hata:", res.status, data);
       }
     } catch (err) {
-      console.error("[Prayer] Fetch hatasi:", err);
+      console.error("[Prayer] ❌ Fetch hatasi:", err);
     }
   }, [prayerTracker, todayDateKey]);
+
 
   // ─── Web Push Aboneliği ───────────────────────────────────────────────────
   const handleTogglePushNotification = useCallback(async () => {
