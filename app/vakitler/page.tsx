@@ -83,9 +83,9 @@ function getOrCreateClientId(): string {
 }
 
 // VAPID public key'i Uint8Array'e çevir
-function urlBase64ToUint8Array(base64String: string): Uint8Array {
+function urlBase64ToUint8Array(base64String: string) {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const base64 = (base64String + padding).replace(/\-/g, "+").replace(/_/g, "/");
   const rawData = window.atob(base64);
   const outputArray = new Uint8Array(rawData.length);
   for (let i = 0; i < rawData.length; ++i) {
@@ -241,24 +241,43 @@ export default function VakitlerPage() {
   // ─── Web Push Aboneliği ───────────────────────────────────────────────────
   const handleTogglePushNotification = useCallback(async () => {
     if (typeof window === "undefined" || !("serviceWorker" in navigator) || !("PushManager" in window)) {
-      alert("Bu tarayıcı Web Push bildirimlerini desteklemiyor.");
+      alert("Bu tarayıcı veya cihaz Web Push bildirimlerini desteklemiyor.");
       return;
     }
 
     setPushLoading(true);
 
     try {
-      // Bildirim izni iste
+      // 1. Bildirim izni iste
       const permission = await Notification.requestPermission();
       setNotificationPermission(permission);
 
       if (permission !== "granted") {
-        alert("Bildirim izni verilmedi. Tarayıcı ayarlarından izin verebilirsiniz.");
-        setPushLoading(false);
+        alert("Bildirim izni verilmedi. Cihaz ayarlarınızdan bildirim iznini açabilirsiniz.");
         return;
       }
 
-      const reg = await navigator.serviceWorker.ready;
+      // 2. SW Registration'ı maksimum 5 saniye bekle (Timeout koruması)
+      const getRegistrationWithTimeout = (): Promise<ServiceWorkerRegistration> => {
+        const timeout = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("Service Worker hazırlığı 5 saniye içinde tamamlanamadı (Timeout)")), 5000)
+        );
+
+        const fetchReg = (async () => {
+          let reg = await navigator.serviceWorker.getRegistration();
+          if (!reg) {
+            reg = await navigator.serviceWorker.register("/sw.js");
+          }
+          if (!reg.active) {
+            await navigator.serviceWorker.ready;
+          }
+          return reg;
+        })();
+
+        return Promise.race([fetchReg, timeout]);
+      };
+
+      const reg = await getRegistrationWithTimeout();
 
       if (isPushSubscribed) {
         // ─── Aboneliği İptal Et ───────────────────────────────────────────
@@ -271,7 +290,7 @@ export default function VakitlerPage() {
           await fetch("/api/push/subscribe", {
             method: "DELETE",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ clientId }),
+            body: JSON.stringify({ userId: clientId, clientId }),
           });
         }
         setIsPushSubscribed(false);
@@ -280,10 +299,7 @@ export default function VakitlerPage() {
         // ─── Yeni Abonelik Oluştur ────────────────────────────────────────
         const vapidKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
         if (!vapidKey) {
-          console.error("NEXT_PUBLIC_VAPID_PUBLIC_KEY eksik!");
-          alert("Bildirim yapılandırması eksik. Lütfen daha sonra tekrar deneyin.");
-          setPushLoading(false);
-          return;
+          throw new Error("NEXT_PUBLIC_VAPID_PUBLIC_KEY ortam değişkeni tanımlanmamış!");
         }
 
         const subscription = await reg.pushManager.subscribe({
@@ -294,10 +310,11 @@ export default function VakitlerPage() {
         const clientId = getOrCreateClientId();
         const subJson = subscription.toJSON();
 
-        await fetch("/api/push/subscribe", {
+        const res = await fetch("/api/push/subscribe", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            userId: clientId,
             clientId,
             subscription: {
               endpoint: subJson.endpoint,
@@ -307,9 +324,14 @@ export default function VakitlerPage() {
           }),
         });
 
+        const resData = await res.json();
+        if (!res.ok) {
+          throw new Error(resData.error || "Abonelik sunucuya kaydedilemedi.");
+        }
+
         setIsPushSubscribed(true);
 
-        // Başarı bildirimi
+        // Yerel test bildirimi gönder (varsa)
         if (reg.showNotification) {
           await reg.showNotification("Ezan Hatırlatıcı Etkinleştirildi 🔔", {
             body: "Vaktin çıkmasına 15 dakika kala namazınızı kılmadıysanız kilit ekranına bildirim alacaksınız.",
@@ -317,9 +339,10 @@ export default function VakitlerPage() {
           });
         }
       }
-    } catch (err) {
+    } catch (err: unknown) {
       console.error("Push subscription error:", err);
-      alert("Bildirim etkinleştirilirken bir hata oluştu.");
+      const msg = err instanceof Error ? err.message : String(err);
+      alert("Push Hatası: " + msg);
     } finally {
       setPushLoading(false);
     }
