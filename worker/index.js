@@ -1,5 +1,13 @@
-// Din Asistanı - Custom Service Worker Push Event Handlers
+// Din Asistanı - Custom Service Worker Handlers
 // next-pwa v5 bu dosyayı otomatik olarak Workbox SW ile birleştirir
+
+// ─── API İSTEKLERİ: Service Worker Bypass ────────────────────────────────────
+// /api/ ile başlayan istekleri SW kesinlikle yakalamasın, doğrudan ağa iletsin
+self.addEventListener("fetch", (event) => {
+  if (event.request.url.includes("/api/")) {
+    return; // Service Worker müdahale etmesin
+  }
+});
 
 // ─── Push Event Handler ─────────────────────────────────────────────────────
 self.addEventListener("push", (event) => {
