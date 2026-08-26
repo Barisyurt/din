@@ -10,15 +10,6 @@ const withPWA = withPWAInit({
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  async redirects() {
-    return [
-      {
-        source: "/",
-        destination: "/vakitler",
-        permanent: false,
-      },
-    ];
-  },
 };
 
 export default withPWA(nextConfig);
