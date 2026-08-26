@@ -1,2 +1,10 @@
 node_modules
 .next
+
+# Environment variables (hassas veriler - commit edilmez!)
+.env.local
+.env.*.local
+
+# OS files
+.DS_Store
+Thumbs.db

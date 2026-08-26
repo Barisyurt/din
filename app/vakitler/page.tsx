@@ -67,6 +67,28 @@ const TURKEY_CITIES = [
 
 const POPULAR_CITIES = ["İstanbul", "Ankara", "İzmir", "Bursa", "Konya", "Antalya", "Gaziantep", "Adana"];
 
+// Kalıcı clientId üret (localStorage)
+function getOrCreateClientId(): string {
+  if (typeof window === "undefined") return "";
+  const existing = localStorage.getItem("din_client_id");
+  if (existing) return existing;
+  const newId = `cid_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  localStorage.setItem("din_client_id", newId);
+  return newId;
+}
+
+// VAPID public key'i Uint8Array'e çevir
+function urlBase64ToUint8Array(base64String: string): Uint8Array {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
 export default function VakitlerPage() {
   const [locationMode, setLocationMode] = useState<"GPS" | "MANUAL">("MANUAL");
   const [selectedCity, setSelectedCity] = useState<string>("İstanbul");
@@ -83,9 +105,6 @@ export default function VakitlerPage() {
   const [nextPrayerIndex, setNextPrayerIndex] = useState<number>(0);
   const [timeRemainingText, setTimeRemainingText] = useState<string>("00 : 00 : 00");
 
-  // -------------------------------------------------------------------------
-  // Step 6: 5 Vakit Namaz Takip & Notification API State
-  // -------------------------------------------------------------------------
   const todayDateKey = useMemo(() => new Date().toISOString().split("T")[0], []);
 
   const [prayerTracker, setPrayerTracker] = useState<PrayerTrackerState>({
@@ -97,9 +116,21 @@ export default function VakitlerPage() {
   });
 
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>("default");
+  const [isPushSubscribed, setIsPushSubscribed] = useState<boolean>(false);
+  const [pushLoading, setPushLoading] = useState<boolean>(false);
   const hasNotified15MinRef = useRef<Record<string, boolean>>({});
 
-  // Load saved preferences & today's tracker state on mount
+  // ─── Yardımcı: Mevcut push subscription durumunu kontrol et ─────────────
+  const checkPushSubscription = useCallback(async () => {
+    if (typeof window === "undefined" || !("serviceWorker" in navigator) || !("PushManager" in window)) return;
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      setIsPushSubscribed(!!sub);
+    } catch {}
+  }, []);
+
+  // ─── Başlangıç: LocalStorage yükle ──────────────────────────────────────
   useEffect(() => {
     try {
       const savedMode = localStorage.getItem("vakit_location_mode") as "GPS" | "MANUAL" | null;
@@ -113,6 +144,8 @@ export default function VakitlerPage() {
         setNotificationPermission(Notification.permission);
       }
 
+      checkPushSubscription();
+
       if (savedMode === "GPS") {
         requestGPSLocation();
       } else {
@@ -123,37 +156,152 @@ export default function VakitlerPage() {
       console.error("LocalStorage load error:", e);
       fetchTimingsByCity("İstanbul");
     }
-  }, [todayDateKey]);
+  }, [todayDateKey, checkPushSubscription]);
 
-  // Save prayer tracker state date-keyed in LocalStorage
-  const handleTogglePrayerCheck = (id: keyof PrayerTrackerState) => {
+  // ─── Namaz vakti işaretleme ───────────────────────────────────────────────
+  const handleTogglePrayerCheck = useCallback(async (id: keyof PrayerTrackerState) => {
     const updated = { ...prayerTracker, [id]: !prayerTracker[id] };
     setPrayerTracker(updated);
+
+    // LocalStorage güncelle
     try {
       localStorage.setItem(`namaz_tracker_${todayDateKey}`, JSON.stringify(updated));
     } catch (e) {
       console.error("LocalStorage save error:", e);
     }
-  };
 
-  // Request Notification API Permission
-  const requestNotificationPermission = async () => {
-    if (typeof window !== "undefined" && "Notification" in window) {
+    // API üzerinden Redis'e kaydet
+    const clientId = getOrCreateClientId();
+    if (clientId) {
       try {
-        const result = await Notification.requestPermission();
-        setNotificationPermission(result);
-        if (result === "granted") {
-          new Notification("Ezan Hatırlatıcı Etkinleştirildi 🔔", {
-            body: "Vaktin çıkmasına 15 dakika kala namazınızı kılmadıysanız akıllı bildirim alacaksınız.",
-          });
-        }
+        await fetch("/api/prayer/status", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            clientId,
+            date: todayDateKey,
+            prayer: id,
+            completed: updated[id],
+          }),
+        });
       } catch (err) {
-        console.error("Notification permission error:", err);
+        console.warn("[Prayer Status] API sync hatası:", err);
       }
     }
-  };
+  }, [prayerTracker, todayDateKey]);
 
-  // Fetch timings by City (Aladhan Diyanet Method 13)
+  // ─── Web Push Aboneliği ───────────────────────────────────────────────────
+  const handleTogglePushNotification = useCallback(async () => {
+    if (typeof window === "undefined" || !("serviceWorker" in navigator) || !("PushManager" in window)) {
+      alert("Bu tarayıcı Web Push bildirimlerini desteklemiyor.");
+      return;
+    }
+
+    setPushLoading(true);
+
+    try {
+      // Bildirim izni iste
+      const permission = await Notification.requestPermission();
+      setNotificationPermission(permission);
+
+      if (permission !== "granted") {
+        alert("Bildirim izni verilmedi. Tarayıcı ayarlarından izin verebilirsiniz.");
+        setPushLoading(false);
+        return;
+      }
+
+      const reg = await navigator.serviceWorker.ready;
+
+      if (isPushSubscribed) {
+        // ─── Aboneliği İptal Et ───────────────────────────────────────────
+        const existingSub = await reg.pushManager.getSubscription();
+        if (existingSub) {
+          await existingSub.unsubscribe();
+        }
+        const clientId = getOrCreateClientId();
+        if (clientId) {
+          await fetch("/api/push/subscribe", {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ clientId }),
+          });
+        }
+        setIsPushSubscribed(false);
+        setNotificationPermission("default");
+      } else {
+        // ─── Yeni Abonelik Oluştur ────────────────────────────────────────
+        const vapidKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+        if (!vapidKey) {
+          console.error("NEXT_PUBLIC_VAPID_PUBLIC_KEY eksik!");
+          alert("Bildirim yapılandırması eksik. Lütfen daha sonra tekrar deneyin.");
+          setPushLoading(false);
+          return;
+        }
+
+        const subscription = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(vapidKey).buffer as ArrayBuffer,
+        });
+
+        const clientId = getOrCreateClientId();
+        const subJson = subscription.toJSON();
+
+        await fetch("/api/push/subscribe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            clientId,
+            subscription: {
+              endpoint: subJson.endpoint,
+              keys: subJson.keys,
+            },
+            city: selectedCity,
+          }),
+        });
+
+        setIsPushSubscribed(true);
+
+        // Başarı bildirimi
+        if (reg.showNotification) {
+          await reg.showNotification("Ezan Hatırlatıcı Etkinleştirildi 🔔", {
+            body: "Vaktin çıkmasına 15 dakika kala namazınızı kılmadıysanız kilit ekranına bildirim alacaksınız.",
+            icon: "/icons/icon-192x192.png",
+          });
+        }
+      }
+    } catch (err) {
+      console.error("Push subscription error:", err);
+      alert("Bildirim etkinleştirilirken bir hata oluştu.");
+    } finally {
+      setPushLoading(false);
+    }
+  }, [isPushSubscribed, selectedCity]);
+
+  // ─── Şehir değiştirildiğinde subscription'ı güncelle ────────────────────
+  const updateSubscriptionCity = useCallback(async (newCity: string) => {
+    if (!isPushSubscribed) return;
+    const clientId = getOrCreateClientId();
+    if (!clientId) return;
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (!sub) return;
+      const subJson = sub.toJSON();
+      await fetch("/api/push/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientId,
+          subscription: { endpoint: subJson.endpoint, keys: subJson.keys },
+          city: newCity,
+        }),
+      });
+    } catch (err) {
+      console.warn("[Push] Şehir güncelleme hatası:", err);
+    }
+  }, [isPushSubscribed]);
+
+  // ─── API Çağrıları ────────────────────────────────────────────────────────
   const fetchTimingsByCity = async (cityName: string) => {
     setIsLoading(true);
     setErrorMsg(null);
@@ -187,7 +335,6 @@ export default function VakitlerPage() {
     }
   };
 
-  // Fetch timings by Coordinates (Aladhan Diyanet Method 13)
   const fetchTimingsByCoords = async (lat: number, lng: number) => {
     setIsLoading(true);
     setErrorMsg(null);
@@ -214,7 +361,6 @@ export default function VakitlerPage() {
     }
   };
 
-  // Request GPS Location
   const requestGPSLocation = () => {
     if (typeof navigator !== "undefined" && navigator.geolocation) {
       setIsLoading(true);
@@ -241,7 +387,6 @@ export default function VakitlerPage() {
     }
   };
 
-  // Handle City Change
   const handleSelectCity = (cityName: string) => {
     setSelectedCity(cityName);
     setLocationMode("MANUAL");
@@ -249,9 +394,10 @@ export default function VakitlerPage() {
     localStorage.setItem("vakit_location_mode", "MANUAL");
     setShowCityModal(false);
     fetchTimingsByCity(cityName);
+    updateSubscriptionCity(cityName);
   };
 
-  // 6 Prayer Slots Array
+  // ─── Prayer Slots & Checklist ─────────────────────────────────────────────
   const prayerSlots: PrayerSlot[] = useMemo(() => {
     if (!timings) return [];
     return [
@@ -264,7 +410,6 @@ export default function VakitlerPage() {
     ];
   }, [timings]);
 
-  // Checkbox Checklist Items (5 Fard Prayers)
   const checklistItems = useMemo(() => {
     if (!timings) return [];
     return [
@@ -276,14 +421,10 @@ export default function VakitlerPage() {
     ];
   }, [timings]);
 
-  // Calculate Daily Progress
-  const completedCount = useMemo(() => {
-    return Object.values(prayerTracker).filter(Boolean).length;
-  }, [prayerTracker]);
-
+  const completedCount = useMemo(() => Object.values(prayerTracker).filter(Boolean).length, [prayerTracker]);
   const trackerProgressPercent = Math.round((completedCount / 5) * 100);
 
-  // Dynamic Countdown Timer Effect & 15-Min Notification Reminder Trigger
+  // ─── Countdown Timer ──────────────────────────────────────────────────────
   const updateCountdown = useCallback(() => {
     if (!prayerSlots || prayerSlots.length === 0) return;
 
@@ -318,15 +459,11 @@ export default function VakitlerPage() {
     const mins = Math.floor((secondsDiff % 3600) / 60);
     const secs = secondsDiff % 60;
 
-    const formattedHrs = hrs.toString().padStart(2, "0");
-    const formattedMins = mins.toString().padStart(2, "0");
-    const formattedSecs = secs.toString().padStart(2, "0");
+    setTimeRemainingText(
+      `${hrs.toString().padStart(2, "0")} : ${mins.toString().padStart(2, "0")} : ${secs.toString().padStart(2, "0")}`
+    );
 
-    setTimeRemainingText(`${formattedHrs} : ${formattedMins} : ${formattedSecs}`);
-
-    // -----------------------------------------------------------------------
-    // Smart Notification: Trigger 15 minutes (900 seconds) before next prayer
-    // -----------------------------------------------------------------------
+    // Yedek: Push bildirim sistemi yoksa tarayıcı Notification API ile hatırlat
     if (secondsDiff <= 900 && secondsDiff > 840) {
       const nextPrayerSlot = prayerSlots[foundNextIdx];
       const trackerKey = nextPrayerSlot.id as keyof PrayerTrackerState;
@@ -335,19 +472,21 @@ export default function VakitlerPage() {
         trackerKey &&
         !prayerTracker[trackerKey] &&
         !hasNotified15MinRef.current[nextPrayerSlot.id] &&
-        notificationPermission === "granted"
+        notificationPermission === "granted" &&
+        !isPushSubscribed
       ) {
         hasNotified15MinRef.current[nextPrayerSlot.id] = true;
         try {
           new Notification("Ezan Vakti Yaklaşıyor! 🕌", {
             body: `Henüz ${nextPrayerSlot.name} vakti namazınızı kılmadınız. Vaktin girmesine 15 dakika kaldı!`,
+            icon: "/icons/icon-192x192.png",
           });
         } catch (err) {
           console.warn("Notification trigger error:", err);
         }
       }
     }
-  }, [prayerSlots, prayerTracker, notificationPermission]);
+  }, [prayerSlots, prayerTracker, notificationPermission, isPushSubscribed]);
 
   useEffect(() => {
     updateCountdown();
@@ -355,12 +494,18 @@ export default function VakitlerPage() {
     return () => clearInterval(timerId);
   }, [updateCountdown]);
 
-  // Filter cities for search
   const filteredCities = TURKEY_CITIES.filter((c) =>
     c.toLocaleLowerCase("tr").includes(searchQuery.toLocaleLowerCase("tr"))
   );
 
   const nextPrayer = prayerSlots[nextPrayerIndex] || { name: "İmsak", time: "--:--" };
+
+  // Bildirim butonu durumu
+  const notifButtonClass = isPushSubscribed
+    ? "btn-notification-toggle enabled"
+    : notificationPermission === "granted"
+    ? "btn-notification-toggle"
+    : "btn-notification-toggle";
 
   return (
     <div className="vakitler-wrapper">
@@ -425,9 +570,7 @@ export default function VakitlerPage() {
         )}
       </div>
 
-      {/* ------------------------------------------------------------------ */}
-      {/* STEP 6: GÜNLÜK NAMAZ TAKİP VE AKILLI HATIRLATICI KARTI            */}
-      {/* ------------------------------------------------------------------ */}
+      {/* ─── GÜNLÜK NAMAZ TAKİP VE AKILLI HATIRLATICI KARTI ─── */}
       <div className="namaz-tracker-card" id="card-namaz-tracker">
         <div className="tracker-header-row">
           <div className="tracker-title-box">
@@ -441,23 +584,48 @@ export default function VakitlerPage() {
           </div>
 
           <button
-            className={`btn-notification-toggle ${notificationPermission === "granted" ? "enabled" : ""}`}
-            onClick={requestNotificationPermission}
+            className={notifButtonClass}
+            onClick={handleTogglePushNotification}
             id="btn-toggle-notifications"
+            disabled={pushLoading}
+            title={isPushSubscribed ? "Kilit Ekranı Bildirimlerini Kapat" : "Kilit Ekranı Bildirimi Etkinleştir"}
           >
-            {notificationPermission === "granted" ? (
+            {pushLoading ? (
+              <>
+                <RefreshCw size={14} style={{ animation: "spin 1s linear infinite" }} />
+                <span>Yükleniyor...</span>
+              </>
+            ) : isPushSubscribed ? (
               <>
                 <Bell size={14} />
-                <span>Bildirimler Açık</span>
+                <span>Push Bildirim Açık</span>
               </>
             ) : (
               <>
                 <BellOff size={14} />
-                <span>Bildirim Etkinleştir (15 Dk)</span>
+                <span>Push Bildirim Aç</span>
               </>
             )}
           </button>
         </div>
+
+        {/* Push Bildirim Açıklama Etiketi */}
+        {isPushSubscribed && (
+          <div
+            style={{
+              fontSize: "0.75rem",
+              color: "var(--emerald-light)",
+              background: "rgba(16, 185, 129, 0.1)",
+              border: "1px solid rgba(16, 185, 129, 0.25)",
+              borderRadius: "8px",
+              padding: "6px 10px",
+              marginTop: "-4px",
+              marginBottom: "4px",
+            }}
+          >
+            🔔 Kilit ekranı bildirimleri aktif — vaktin çıkmasına 15 dk kala kılınmamış namazlar için uyarı alacaksınız.
+          </div>
+        )}
 
         {/* Daily Progress Bar */}
         <div className="tracker-progress-container">
