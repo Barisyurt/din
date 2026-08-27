@@ -2,12 +2,17 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Sparkles, Clock, BookOpen, Compass } from "lucide-react";
+import { Sparkles, Clock, BookOpen, Compass, Volume2 } from "lucide-react";
 
 export default function BottomNavigation() {
   const pathname = usePathname();
 
   const navItems = [
+    {
+      name: "Namaz Kıl",
+      href: "/namaz-kil",
+      icon: Volume2,
+    },
     {
       name: "Zikirmatik",
       href: "/zikirmatik",
